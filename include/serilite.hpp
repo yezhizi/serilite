@@ -41,6 +41,38 @@ struct is_iterable<T, std::void_t<decltype(std::begin(std::declval<T>()) ==
 template <typename T>
 constexpr bool is_iterable_v = is_iterable<T>::value;
 
+// Check if T is a std::pair.
+template <typename T, typename = void>
+struct _is_std_pair : std::false_type {};
+
+template <typename T1, typename T2>
+struct _is_std_pair<std::pair<T1, T2>> : std::true_type {};
+
+template <typename T>
+struct is_std_pair_decay : _is_std_pair<std::decay_t<T>> {};
+
+// Alias for is_std_pair<T>::value.
+template <typename T>
+constexpr bool is_std_pair_v = is_std_pair_decay<T>::value;
+
+// Check if T is a std::tuple.
+template <typename T, typename = void>
+struct is_std_tuple : std::false_type {};
+
+template <typename... Args>
+struct is_std_tuple<std::tuple<Args...>> : std::true_type {};
+
+template <typename T>
+struct is_std_tuple_decay : is_std_tuple<std::decay_t<T>> {};
+
+// Alias for is_std_tuple<T>::value.
+template <typename T>
+constexpr bool is_std_tuple_v = is_std_tuple_decay<T>::value;
+
+// Check if T is a std::pair or a std::tuple.
+template <typename T>
+constexpr bool is_std_pairor_tuple_v = is_std_pair_v<T> || is_std_tuple_v<T>;
+
 // Check if T can be memcpy constructed from an iterator range.
 template <typename T, typename = void>
 struct is_memcpy_constructible : std::false_type {};
@@ -85,12 +117,29 @@ constexpr size_t member_count_v<std::tuple<Args...>> = sizeof...(Args);
 template <typename... Args>
 constexpr size_t member_count_v<std::pair<Args...>> = 2;
 
-template <auto N, typename T, typename ExecFunc>
+template <typename T, typename ExecFunc, auto... Is>
+void foreach_over_std_pair_tuple_impl(T& value, ExecFunc&& func,
+                                      std::index_sequence<Is...>) {
+    (func(std::get<Is>(value)), ...);
+}
+
+// Apply a function to each element of a container.
+template <auto N, typename T, typename ExecFunc,
+          std::enable_if_t<!details::is_std_pairor_tuple_v<T>, int> = 0>
 void foreach_over_elements(T& value, ExecFunc&& func) {
     foreach_over_elements_impl(value, std::forward<ExecFunc>(func),
                                constant_size_t<N>{});
 }
 
+// Apply a function to each element of a container, which is a tuple or a pair.
+template <auto N, typename T, typename ExecFunc,
+          std::enable_if_t<details::is_std_pairor_tuple_v<T>, int> = 0>
+void foreach_over_elements(T& value, ExecFunc&& func) {
+    foreach_over_std_pair_tuple_impl(value, std::forward<ExecFunc>(func),
+                                     std::make_index_sequence<N>{});
+}
+
+// get a string_view of the serialized data of a string or vector-like type.
 template <typename T,
           typename = std::void_t<decltype(std::declval<T>().data()),
                                  decltype(std::declval<T>().size())>>
@@ -100,24 +149,81 @@ std::string_view get_serialized_data(const T& value) {
 
 }  // namespace details
 
+/**
+ * @brief  A type that represents serialized result.
+ */
 struct SeriData {
     using bytes_vector = std::vector<std::byte>;
     using ele_type = std::byte;
 
     SeriData(size_t size = 0) : data_(size) {}
 
+    /**
+     * @brief  Get the serialized data as a vector of bytes.
+     * @return const bytes_vector&
+     */
     const bytes_vector& as_vector() const { return data_; }
 
+    /**
+     * @brief  Get the serialized data as a string_view.
+     * @return const std::string_view
+     */
     const std::string_view as_string() const {
         return {reinterpret_cast<const char*>(data_.data()), data_.size()};
     }
 
+    /**
+     * @brief  Get the serialized data as a pointer to the first element.
+     * @return const ele_type*
+     */
     const auto* data() const { return as_string().data(); }
 
+    /**
+     * @brief  Get the size of the serialized data.
+     * @return size_t
+     */
     size_t size() const { return data_.size(); }
 
     bytes_vector data_;
 };
+
+////// declaration of serialize and deserialize functions //////
+#include <type_traits>
+#include <string_view>
+
+template <typename T>
+std::enable_if_t<std::is_trivially_copyable_v<T>, SeriData>
+serialize(const T& value);
+
+template <typename T>
+std::enable_if_t<!std::is_trivially_copyable_v<T> && details::is_memcpy_constructible_v<T>, SeriData>
+serialize(const T& value);
+
+template <typename T>
+std::enable_if_t<!std::is_trivially_copyable_v<T> && !details::is_memcpy_constructible_v<T> && details::is_iterable_v<T>, SeriData>
+serialize(const T& value);
+
+template <typename T>
+std::enable_if_t<!std::is_trivially_copyable_v<T> && (std::is_aggregate_v<T> || details::is_std_pairor_tuple_v<T>), SeriData>
+serialize(const T& value);
+
+template <typename T, typename U>
+std::enable_if_t<std::is_trivially_copyable_v<T>, bool>
+deserialize(const U& serialized, T& value, std::string_view* remain = nullptr);
+
+template <typename T, typename U>
+std::enable_if_t<!std::is_trivially_copyable_v<T> && details::is_memcpy_constructible_v<T>, bool>
+deserialize(const U& serialized, T& value, std::string_view* remain = nullptr);
+
+template <typename T, typename U>
+std::enable_if_t<!std::is_trivially_copyable_v<T> && !details::is_memcpy_constructible_v<T> && details::is_iterable_v<T>, bool>
+deserialize(const U& serialized, T& value, std::string_view* remain = nullptr);
+
+template <typename T, typename U>
+std::enable_if_t<!std::is_trivially_copyable_v<T> && (std::is_aggregate_v<T> || details::is_std_pairor_tuple_v<T>), bool>
+deserialize(const U& serialized, T& value, std::string_view* remain = nullptr);
+
+////////////////////////////////////////////////////////////////////
 
 #define INSERT_LENGTH_INTO_RESULT(result, value)                    \
     do {                                                            \
@@ -125,20 +231,18 @@ struct SeriData {
         std::memcpy(result.data_.data(), &length_data, LengthSize); \
     } while (0)
 
-template <typename T,
-          std::enable_if_t<std::is_trivially_copyable_v<T>, int> = 0>
-SeriData serialize(const T& value) {
+template <typename T>
+std::enable_if_t<std::is_trivially_copyable_v<T>, SeriData>
+serialize(const T& value) {
     size_t size = sizeof(T);
     SeriData result(size);
     std::memcpy(result.data_.data(), &value, size);
     return result;
 }
 
-template <typename T,
-          std::enable_if_t<!std::is_trivially_copyable_v<T> &&
-                               details::is_memcpy_constructible_v<T>,
-                           int> = 0>
-SeriData serialize(const T& value) {
+template <typename T>
+std::enable_if_t<!std::is_trivially_copyable_v<T> && details::is_memcpy_constructible_v<T>, SeriData>
+serialize(const T& value) {
     using value_type = typename T::value_type;
     size_t element_count = value.size();
     size_t source_size = element_count * sizeof(value_type);
@@ -151,21 +255,19 @@ SeriData serialize(const T& value) {
     return result;
 }
 
-template <typename T,
-          std::enable_if_t<!std::is_trivially_copyable_v<T> &&
-                               !details::is_memcpy_constructible_v<T> &&
-                               details::is_iterable_v<T>,
-                           int> = 0>
-SeriData serialize(const T& value) {
+
+template <typename T>
+std::enable_if_t<!std::is_trivially_copyable_v<T> && !details::is_memcpy_constructible_v<T> && details::is_iterable_v<T>, SeriData>
+serialize(const T& value){
     using value_type = typename T::value_type;
 
     size_t element_count = std::size(value);
     size_t source_size = 0;
-    std::vector<SeriData> temp(element_count);
-    for (const value_type& element : value) {
+    std::vector<SeriData> temp;
+    for (const auto& element : value) {
         auto element_data = serialize(element);
-        temp.emplace_back(std::move(element_data));
         source_size += element_data.size();
+        temp.emplace_back(std::move(element_data));
     }
     SeriData result(LengthSize + source_size);
     INSERT_LENGTH_INTO_RESULT(result, element_count);
@@ -175,16 +277,14 @@ SeriData serialize(const T& value) {
                     element_data.data_.size());
         offset += element_data.data_.size();
     }
-
     return result;
 }
 
-template <typename T, std::enable_if_t<!std::is_trivially_copyable_v<T> &&
-                                           std::is_aggregate_v<T>,
-                                       int> = 0>
-SeriData serialize(const T& value) {
+template <typename T>
+std::enable_if_t<!std::is_trivially_copyable_v<T> && (std::is_aggregate_v<T> || details::is_std_pairor_tuple_v<T>), SeriData>
+serialize(const T& value){
     constexpr auto member_count = details::member_count_v<T>;
-    std::vector<SeriData> temp(member_count);
+    std::vector<SeriData> temp;
     size_t source_size = 0;
     details::foreach_over_elements<member_count>(
         value, [&temp, &source_size](const auto& element) {
@@ -203,24 +303,20 @@ SeriData serialize(const T& value) {
     return result;
 }
 
-template <typename T, typename U,
-          std::enable_if_t<std::is_trivially_copyable_v<T>, int> = 0>
-bool deserialize(const U& serialized, T& value,
-                 std::string_view* remain = nullptr) {
+template <typename T, typename U>
+std::enable_if_t<std::is_trivially_copyable_v<T>, bool>
+deserialize(const U& serialized, T& value, std::string_view* remain ){
     auto view = details::get_serialized_data(serialized);
     size_t size = sizeof(T);
     if (view.size() < size) return false;
-    std::memcpy(&value, view.data(), size);
+    std::memcpy(const_cast<std::remove_const_t<T>*>(&value), view.data(), size);
     if (remain) *remain = view.substr(size);
     return true;
 }
 
-template <typename T, typename U,
-          std::enable_if_t<!std::is_trivially_copyable_v<T> &&
-                               details::is_memcpy_constructible_v<T>,
-                           int> = 0>
-bool deserialize(const U& serialized, T& value,
-                 std::string_view* remain = nullptr) {
+template <typename T, typename U>
+std::enable_if_t<!std::is_trivially_copyable_v<T> && details::is_memcpy_constructible_v<T>, bool>
+deserialize(const U& serialized, T& value, std::string_view* remain ) {
     auto view = details::get_serialized_data(serialized);
     using value_type = typename T::value_type;
     if (view.size() < LengthSize) return false;
@@ -235,20 +331,14 @@ bool deserialize(const U& serialized, T& value,
     return true;
 }
 
-template <typename T, typename U,
-          std::enable_if_t<!std::is_trivially_copyable_v<T> &&
-                               !details::is_memcpy_constructible_v<T> &&
-                               details::is_iterable_v<T>,
-                           int> = 0>
-bool deserialize(const U& serialized, T& value,
-                 std::string_view* remain = nullptr) {
-    auto& view = details::get_serialized_data(serialized);
+template <typename T, typename U>
+std::enable_if_t<!std::is_trivially_copyable_v<T> && !details::is_memcpy_constructible_v<T> && details::is_iterable_v<T>, bool>
+deserialize(const U& serialized, T& value, std::string_view* remain){
+    auto view = details::get_serialized_data(serialized);
     using value_type = typename T::value_type;
     if (view.size() < LengthSize) return false;
     LengthType element_count = 0;
     std::memcpy(&element_count, view.data(), LengthSize);
-    if (view.size() < LengthSize + element_count * sizeof(value_type))
-        return false;
     auto insert_iter = std::inserter(value, std::end(value));
     auto ele_view = view.substr(LengthSize);
     for (size_t i = 0; i < element_count; ++i) {
@@ -259,12 +349,10 @@ bool deserialize(const U& serialized, T& value,
     if (remain) *remain = ele_view;
     return true;
 }
-template <
-    typename T, typename U,
-    std::enable_if_t<!std::is_trivially_copyable_v<T> && std::is_aggregate_v<T>,
-                     int> = 0>
-bool deserialize(const U& serialized, T& value,
-                 std::string_view* remain = nullptr) {
+
+template <typename T, typename U>
+std::enable_if_t<!std::is_trivially_copyable_v<T> && (std::is_aggregate_v<T> || details::is_std_pairor_tuple_v<T>), bool>
+deserialize(const U& serialized, T& value, std::string_view* remain ) {
     constexpr auto member_count = details::member_count_v<T>;
     auto view = details::get_serialized_data(serialized);
     bool success = true;
