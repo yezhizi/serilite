@@ -5,6 +5,7 @@
 #include <iterator>
 #include <string_view>
 #include <vector>
+#include <cstddef>
 
 #include "serilite/for_each_internal.h"
 
