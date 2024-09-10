@@ -200,9 +200,6 @@ struct SeriData {
 };
 
 ////// declaration of serialize and deserialize functions //////
-#include <type_traits>
-#include <string_view>
-
 template <typename T>
 std::enable_if_t<std::is_trivially_copyable_v<T>, SeriData>
 serialize(const T& value);
