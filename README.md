@@ -6,10 +6,14 @@ For example, you can serialize a simple object like this:
 ```cpp
 #include <serilite.hpp>
 YourObject obj;
-auto serialized = serilite::serialize(obj).to_string();
+auto serialized_res = serilite::serialize(obj);
+auto serialized_view = serialized_res.as_string_view();
+auto serialized_string = serialized_res.as_string();
 // ....
 YourObject obj2
-serilite::deserialize(serialized,obj2);
+serilite::deserialize(serialized_res,obj2);
+serilite::deserialize(serialized_view,obj2);
+serilite::deserialize(serialized_string,obj2);
 ```
 
 No need to write any serialization or deserialization code for your objects or modify them in any way.
